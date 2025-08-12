@@ -1,7 +1,7 @@
 # RGM: Rust GPU Monitor
 
 [![Build Status](https://img.shields.io/badge/build-passing-brightgreen)](https://github.com/xlqmu/RGM)
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+[![License: MIT / Apache-2.0](https://img.shields.io/badge/License-MIT%20%2F%20Apache--2.0-blue)](https://opensource.org/licenses/MIT)
 
 A lightweight, command-line utility built with Rust to quickly check your NVIDIA GPU's utilization. Simple, fast, and reliable.
 
@@ -73,4 +73,13 @@ After creating the link, the application should run without issues.
 
 ## License
 
-This project is licensed under the MIT License. See the
+This project is licensed under either of:
+
+*   Apache License, Version 2.0, ([LICENSE-APACHE](LICENSE-APACHE) or https://www.apache.org/licenses/LICENSE-2.0)
+*   MIT license ([LICENSE-MIT](LICENSE-MIT) or https://opensource.org/licenses/MIT)
+
+at your option.
+
+### Contribution
+
+Unless you explicitly state otherwise, any contribution intentionally submitted for inclusion in this project by you, as defined in the Apache-2.0 license, shall be dually licensed as above, without any additional terms or conditions.
