@@ -1,7 +1,8 @@
 use crossbeam_channel::{Receiver, bounded};
 use eframe::egui;
 use egui::{Color32, ViewportBuilder};
-use egui_plot::{GridMark, Line, Plot, PlotPoints};
+// MODIFIED: Added `Legend` to the use statement
+use egui_plot::{Legend, Line, Plot, PlotPoints};
 use nvml_wrapper::{
     Nvml,
     enum_wrappers::device::{Clock, PcieUtilCounter, TemperatureSensor},
@@ -54,7 +55,8 @@ struct RgmApp {
     data: Arc<Mutex<VecDeque<GpuData>>>,             // 历史数据
     receiver: Receiver<(GpuData, Vec<ProcessInfo>)>, // 接收器
     _start_time: std::time::Instant,                 // 程序开始时间
-    max_data_points: usize,                          // 保留的最大数据点数
+    #[allow(dead_code)]
+    max_data_points: usize,   // 保留的最大数据点数
     display_duration: f64,                           // 显示的时间范围（秒）
     #[allow(dead_code)]
     gpu_info: Option<GpuInfo>, // GPU 静态信息
@@ -66,15 +68,14 @@ impl RgmApp {
         // 创建通道用于线程通信
         let (sender, receiver) = bounded(100);
 
-        // 创建一个共享的数据队列
-        let data = Arc::new(Mutex::new(VecDeque::with_capacity(1500)));
+        // Adjust capacity for 10 seconds of data (10s * 5 samples/s = 50) + buffer
+        let data = Arc::new(Mutex::new(VecDeque::with_capacity(60)));
         let data_clone = Arc::clone(&data);
 
         // 创建进程信息共享对象
         let processes = Arc::new(Mutex::new(Vec::new()));
         let processes_clone = Arc::clone(&processes);
 
-        // NEW: 初始 GPU 信息, `mut` is now necessary
         let gpu_info = None;
 
         // 启动后台线程收集 GPU 数据
@@ -173,7 +174,7 @@ impl RgmApp {
                             process_infos.push(ProcessInfo {
                                 pid: proc.pid,
                                 name: proc_name,
-                                memory_usage: memory_usage,
+                                memory_usage,
                                 cpu_percent: 0.0,
                             });
                         }
@@ -185,8 +186,8 @@ impl RgmApp {
                     break; // 通道已关闭，退出线程
                 }
 
-                // 每 200 毫秒采集一次数据
-                thread::sleep(Duration::from_millis(200));
+                // 每 100 毫秒采集一次数据
+                thread::sleep(Duration::from_millis(100));
             }
         });
 
@@ -199,8 +200,8 @@ impl RgmApp {
             data: data_clone,
             receiver,
             _start_time: std::time::Instant::now(),
-            max_data_points: 1500,  // 保留5分钟数据(5min * 60s * 5/s)
-            display_duration: 60.0, // 默认显示1分钟
+            max_data_points: 60,
+            display_duration: 10.0,
             gpu_info,
             processes: processes_clone,
         }
@@ -212,56 +213,62 @@ impl eframe::App for RgmApp {
         // 从通道接收新数据
         while let Ok((gpu_data, proc_infos)) = self.receiver.try_recv() {
             let mut data = self.data.lock().unwrap();
+
+            // 先用 gpu_data.timestamp 计算窗口
+            let now = gpu_data.timestamp;
+            let x_min = (now - self.display_duration).max(0.0);
+
             data.push_back(gpu_data);
+
+            // 丢弃窗口外的数据 (older than 10 seconds)
+            while data.front().map_or(false, |d| d.timestamp < x_min) {
+                data.pop_front();
+            }
 
             // 更新进程信息
             let mut processes = self.processes.lock().unwrap();
             *processes = proc_infos;
-
-            // 如果数据点太多，移除旧的数据
-            while data.len() > self.max_data_points {
-                data.pop_front();
-            }
         }
 
         // 中央面板
         egui::CentralPanel::default().show(ctx, |ui| {
-            ui.heading("Rust GPU Monitor");
+            ui.heading("🚀 Rust GPU Monitor");
+            ui.add_space(8.0);
 
             let data_guard = self.data.lock().unwrap();
+            let latest = data_guard.back();
 
-            // 如果有数据，显示详细 GPU 信息
-            if let Some(latest) = data_guard.back() {
-                ui.collapsing("GPU Details", |ui| {
+            // 顶部卡片式 GPU 状态
+            if let Some(latest) = latest {
+                egui::Frame::group(ui.style()).show(ui, |ui| {
                     ui.horizontal(|ui| {
                         ui.vertical(|ui| {
-                            ui.label(format!("GPU: {}%", latest.utilization));
-                            ui.label(format!(
-                                "Memory: {:.2}/{:.2} GB ({:.1}%)",
-                                latest.memory_used,
-                                latest.memory_total,
-                                latest.memory_used / latest.memory_total * 100.0
-                            ));
+                            ui.label(
+                                egui::RichText::new(format!(
+                                    "GPU Utilization: {}%",
+                                    latest.utilization
+                                ))
+                                .color(Color32::GREEN)
+                                .size(22.0)
+                                .strong(),
+                            );
                             ui.label(format!("Temperature: {}°C", latest.temperature));
-                        });
-
-                        ui.vertical(|ui| {
-                            ui.label(format!("GPU Clock: {} MHz", latest.gpu_clock));
-                            ui.label(format!("Memory Clock: {} MHz", latest.memory_clock));
                             ui.label(format!("Fan Speed: {}%", latest.fan_speed));
                         });
-
+                        ui.separator();
                         ui.vertical(|ui| {
                             ui.label(format!(
-                                "Power: {:.2}/{:.2} W ({:.1}%)",
-                                latest.power_usage,
-                                latest.power_limit,
-                                if latest.power_limit > 0.0 {
-                                    latest.power_usage / latest.power_limit * 100.0
-                                } else {
-                                    0.0
-                                }
+                                "Memory: {:.2}/{:.2} GB",
+                                latest.memory_used, latest.memory_total
                             ));
+                            ui.label(format!(
+                                "Power: {:.2}/{:.2} W",
+                                latest.power_usage, latest.power_limit
+                            ));
+                            ui.label(format!("GPU Clock: {} MHz", latest.gpu_clock));
+                        });
+                        ui.separator();
+                        ui.vertical(|ui| {
                             ui.label(format!("PCIe TX: {:.2} MB/s", latest.pcie_throughput_tx));
                             ui.label(format!("PCIe RX: {:.2} MB/s", latest.pcie_throughput_rx));
                         });
@@ -269,154 +276,96 @@ impl eframe::App for RgmApp {
                 });
             }
 
-            // 创建数据点用于绘制曲线
+            ui.add_space(12.0);
+            ui.separator();
+
+            // 曲线图区域
+            ui.heading("📈 Real-time GPU Metrics (Last 10 Seconds)");
             let gpu_util_points: PlotPoints = data_guard
                 .iter()
                 .map(|data| [data.timestamp, data.utilization as f64])
                 .collect();
-
             let memory_points: PlotPoints = data_guard
                 .iter()
                 .map(|data| [data.timestamp, data.memory_used / data.memory_total * 100.0])
                 .collect();
-
             let temp_points: PlotPoints = data_guard
                 .iter()
                 .map(|data| [data.timestamp, data.temperature as f64])
                 .collect();
-
-            // 绘制功率曲线
             let power_points: PlotPoints = data_guard
                 .iter()
-                .filter(|data| data.power_limit > 0.0) // 避免除零错误
+                .filter(|data| data.power_limit > 0.0)
                 .map(|data| [data.timestamp, data.power_usage / data.power_limit * 100.0])
                 .collect();
 
-            // 计算显示的时间范围
             let now = data_guard.back().map_or(0.0, |d| d.timestamp);
             let x_min = (now - self.display_duration).max(0.0);
-            let x_max = now;
+            let x_max = now.max(self.display_duration); // Ensure the window is always 10s wide at the start
 
-            // 绘制 GPU 利用率曲线
             Plot::new("gpu_utilization")
-                .view_aspect(2.0)
-                .set_margin_fraction(egui::Vec2::new(0.0, 0.2))
+                .view_aspect(2.5)
+                .legend(Legend::default()) // 新增：显示图例
                 .include_y(0.0)
                 .include_y(100.0)
-                .x_axis_formatter(|x, _range| format!("{:?}", x))
-                .y_axis_formatter(|y, _range| format!("{:?}%", y))
-                .show_x(true)
-                .show_y(true)
-                .x_grid_spacer(|_| vec![])
                 .include_x(x_min)
                 .include_x(x_max)
-                .y_grid_spacer(|_| {
-                    vec![
-                        GridMark {
-                            value: 10.0,
-                            step_size: 10.0,
-                        },
-                        GridMark {
-                            value: 30.0,
-                            step_size: 20.0,
-                        },
-                        GridMark {
-                            value: 50.0,
-                            step_size: 20.0,
-                        },
-                        GridMark {
-                            value: 70.0,
-                            step_size: 20.0,
-                        },
-                        GridMark {
-                            value: 90.0,
-                            step_size: 20.0,
-                        },
-                    ]
-                })
+                .show_x(false) // Hide timestamp labels for a cleaner look
+                .show_y(true)
                 .show(ui, |plot_ui| {
-                    // GPU 利用率曲线
+                    plot_ui
+                        .line(Line::new("GPU Utilization", gpu_util_points).color(Color32::GREEN));
                     plot_ui.line(
-                        Line::new("GPU Utilization", gpu_util_points)
-                            .color(Color32::from_rgb(0, 255, 0)),
-                    );
-
-                    // 内存利用率曲线
-                    plot_ui.line(
-                        Line::new("Memory Usage", memory_points)
+                        Line::new("Memory Usage (%)", memory_points)
                             .color(Color32::from_rgb(0, 128, 255)),
                     );
-
-                    // 温度曲线 (缩放到相同比例)
-                    let scaled_temp_points: PlotPoints = temp_points
-                        .points()
-                        .iter()
-                        .map(|point| [point.x, point.y * 100.0 / 100.0])
-                        .collect();
-
                     plot_ui.line(
-                        Line::new("Temperature (°C)", scaled_temp_points)
+                        Line::new("Temperature (°C)", temp_points)
                             .color(Color32::from_rgb(255, 128, 0)),
                     );
-
-                    // 功率使用曲线
                     plot_ui.line(
                         Line::new("Power Usage (%)", power_points)
                             .color(Color32::from_rgb(255, 0, 128)),
                     );
                 });
 
-            // 显示进程信息
-            ui.collapsing("GPU Processes", |ui| {
-                let processes = self.processes.lock().unwrap();
+            ui.add_space(12.0);
+            ui.separator();
 
-                egui::Grid::new("processes_grid")
-                    .striped(true)
-                    .spacing([10.0, 4.0])
-                    .show(ui, |ui| {
-                        ui.heading("PID");
-                        ui.heading("Name");
-                        ui.heading("Memory");
-                        ui.end_row();
-
-                        for proc in processes.iter() {
-                            ui.label(proc.pid.to_string());
-                            ui.label(&proc.name);
-                            ui.label(format!(
-                                "{:.1} MB",
-                                proc.memory_usage as f64 / 1024.0 / 1024.0
-                            ));
+            // 进程信息表格
+            ui.heading("🧩 GPU Processes");
+            egui::ScrollArea::vertical()
+                .max_height(200.0)
+                .show(ui, |ui| {
+                    let processes = self.processes.lock().unwrap();
+                    egui::Grid::new("processes_grid")
+                        .striped(true)
+                        .spacing([12.0, 6.0])
+                        .show(ui, |ui| {
+                            ui.label(egui::RichText::new("PID").strong());
+                            ui.label(egui::RichText::new("Name").strong());
+                            ui.label(egui::RichText::new("Memory (MB)").strong());
                             ui.end_row();
-                        }
-                    });
-            });
-
-            // 控制区域
-            ui.horizontal(|ui| {
-                ui.label("显示时间范围:");
-                if ui.button("30秒").clicked() {
-                    self.display_duration = 30.0;
-                }
-                if ui.button("1分钟").clicked() {
-                    self.display_duration = 60.0;
-                }
-                if ui.button("5分钟").clicked() {
-                    self.display_duration = 300.0;
-                }
-                if ui.button("全部").clicked() {
-                    self.display_duration = now;
-                }
-            });
+                            for proc in processes.iter() {
+                                ui.label(proc.pid.to_string());
+                                ui.label(&proc.name);
+                                ui.label(format!(
+                                    "{:.1}",
+                                    proc.memory_usage as f64 / 1024.0 / 1024.0
+                                ));
+                                ui.end_row();
+                            }
+                        });
+                });
         });
 
-        // 请求持续更新 UI
         ctx.request_repaint();
     }
 }
 
 fn main() {
     let native_options = eframe::NativeOptions {
-        viewport: ViewportBuilder::default().with_inner_size([1000.0, 700.0]), // 增加窗口大小以显示更多信息
+        viewport: ViewportBuilder::default().with_inner_size([1000.0, 700.0]),
         ..Default::default()
     };
 
