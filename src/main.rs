@@ -266,6 +266,7 @@ impl eframe::App for RgmApp {
                                 latest.power_usage, latest.power_limit
                             ));
                             ui.label(format!("GPU Clock: {} MHz", latest.gpu_clock));
+                            ui.label(format!("Memory Clock: {} MHz", latest.memory_clock));
                         });
                         ui.separator();
                         ui.vertical(|ui| {
