@@ -1,7 +1,6 @@
 use crossbeam_channel::{Receiver, bounded};
 use eframe::egui;
 use egui::{Color32, ViewportBuilder};
-// MODIFIED: Added `Legend` to the use statement
 use egui_plot::{Legend, Line, Plot, PlotPoints};
 use nvml_wrapper::{
     Nvml,
@@ -12,7 +11,7 @@ use std::collections::VecDeque;
 use std::sync::Mutex;
 use std::{sync::Arc, thread, time::Duration};
 
-// 扩展 GPU 数据结构，添加更多信息
+// GPU 数据结构
 #[derive(Clone, Debug)]
 struct GpuData {
     timestamp: f64,          // 时间戳（秒）
@@ -65,22 +64,14 @@ struct RgmApp {
 
 impl RgmApp {
     fn new(cc: &eframe::CreationContext<'_>) -> Self {
-        // 创建通道用于线程通信
         let (sender, receiver) = bounded(100);
-
-        // Adjust capacity for 10 seconds of data (10s * 5 samples/s = 50) + buffer
-        let data = Arc::new(Mutex::new(VecDeque::with_capacity(60)));
+        let data = Arc::new(Mutex::new(VecDeque::with_capacity(120)));
         let data_clone = Arc::clone(&data);
-
-        // 创建进程信息共享对象
         let processes = Arc::new(Mutex::new(Vec::new()));
         let processes_clone = Arc::clone(&processes);
-
         let gpu_info = None;
 
-        // 启动后台线程收集 GPU 数据
         thread::spawn(move || {
-            // 初始化 NVML
             let nvml = match Nvml::init() {
                 Ok(nvml) => nvml,
                 Err(err) => {
@@ -88,8 +79,6 @@ impl RgmApp {
                     return;
                 }
             };
-
-            // 获取 GPU 设备
             let device = match nvml.device_by_index(0) {
                 Ok(device) => device,
                 Err(err) => {
@@ -97,11 +86,8 @@ impl RgmApp {
                     return;
                 }
             };
-
             let start_time = std::time::Instant::now();
-
             loop {
-                // 获取 GPU 数据
                 let (util, mem, temp) = match (
                     device.utilization_rates(),
                     device.memory_info(),
@@ -115,36 +101,26 @@ impl RgmApp {
                     }
                 };
 
-                // 获取扩展信息
                 let gpu_clock = device.clock_info(Clock::Graphics).unwrap_or(0);
                 let mem_clock = device.clock_info(Clock::Memory).unwrap_or(0);
-
-                // 功率信息
                 let (power_usage, power_limit) =
                     match (device.power_usage(), device.power_management_limit()) {
-                        (Ok(usage), Ok(limit)) => (usage as f64 / 1000.0, limit as f64 / 1000.0), // 转换为瓦特
+                        (Ok(usage), Ok(limit)) => (usage as f64 / 1000.0, limit as f64 / 1000.0),
                         _ => (0.0, 0.0),
                     };
-
-                // 风扇转速
                 let fan_speed = device.fan_speed(0).unwrap_or(0);
-
-                // PCIe 吞吐量
                 let (pcie_tx, pcie_rx) = match (
                     device.pcie_throughput(PcieUtilCounter::Send),
                     device.pcie_throughput(PcieUtilCounter::Receive),
                 ) {
-                    (Ok(rx), Ok(tx)) => (
-                        tx as f64 / 1024.0, // KB/s -> MB/s
-                        rx as f64 / 1024.0,
-                    ),
+                    (Ok(rx), Ok(tx)) => (tx as f64 / 1024.0, rx as f64 / 1024.0),
                     _ => (0.0, 0.0),
                 };
 
                 let gpu_data = GpuData {
                     timestamp: start_time.elapsed().as_secs_f64(),
                     utilization: util.gpu as f32,
-                    memory_used: mem.used as f64 / 1024.0 / 1024.0 / 1024.0, // 转换为 GB
+                    memory_used: mem.used as f64 / 1024.0 / 1024.0 / 1024.0,
                     memory_total: mem.total as f64 / 1024.0 / 1024.0 / 1024.0,
                     temperature: temp,
                     gpu_clock,
@@ -156,11 +132,9 @@ impl RgmApp {
                     pcie_throughput_rx: pcie_rx,
                 };
 
-                // 获取使用 GPU 的进程
                 let mut process_infos: Vec<ProcessInfo> = Vec::new();
                 if let Ok(graphics_processes) = device.running_graphics_processes() {
                     for proc in graphics_processes {
-                        // 避免重复添加已有进程
                         if !process_infos.iter().any(|p| p.pid == proc.pid) {
                             let proc_name =
                                 match std::fs::read_to_string(format!("/proc/{}/comm", proc.pid)) {
@@ -180,18 +154,13 @@ impl RgmApp {
                         }
                     }
                 }
-
-                // 发送数据到主线程
                 if sender.send((gpu_data, process_infos)).is_err() {
-                    break; // 通道已关闭，退出线程
+                    break;
                 }
-
-                // 每 100 毫秒采集一次数据
                 thread::sleep(Duration::from_millis(100));
             }
         });
 
-        // 设置 UI 主题
         let mut style = (*cc.egui_ctx.style()).clone();
         style.visuals.dark_mode = true;
         cc.egui_ctx.set_style(style);
@@ -200,7 +169,7 @@ impl RgmApp {
             data: data_clone,
             receiver,
             _start_time: std::time::Instant::now(),
-            max_data_points: 60,
+            max_data_points: 120,
             display_duration: 10.0,
             gpu_info,
             processes: processes_clone,
@@ -210,35 +179,28 @@ impl RgmApp {
 
 impl eframe::App for RgmApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        // 从通道接收新数据
         while let Ok((gpu_data, proc_infos)) = self.receiver.try_recv() {
             let mut data = self.data.lock().unwrap();
-
-            // 先用 gpu_data.timestamp 计算窗口
             let now = gpu_data.timestamp;
-            let x_min = (now - self.display_duration).max(0.0);
-
+            let window_start_time = (now - self.display_duration).max(0.0);
             data.push_back(gpu_data);
-
-            // 丢弃窗口外的数据 (older than 10 seconds)
-            while data.front().map_or(false, |d| d.timestamp < x_min) {
+            while data
+                .front()
+                .map_or(false, |d| d.timestamp < window_start_time)
+            {
                 data.pop_front();
             }
-
-            // 更新进程信息
             let mut processes = self.processes.lock().unwrap();
             *processes = proc_infos;
         }
 
-        // 中央面板
         egui::CentralPanel::default().show(ctx, |ui| {
-            ui.heading("🚀 Rust GPU Monitor");
+            ui.heading("🚀 GPU Monitor");
             ui.add_space(8.0);
 
             let data_guard = self.data.lock().unwrap();
             let latest = data_guard.back();
 
-            // 顶部卡片式 GPU 状态
             if let Some(latest) = latest {
                 egui::Frame::group(ui.style()).show(ui, |ui| {
                     ui.horizontal(|ui| {
@@ -280,38 +242,48 @@ impl eframe::App for RgmApp {
             ui.add_space(12.0);
             ui.separator();
 
-            // 曲线图区域
+            // ==================== 逻辑修改开始 ====================
             ui.heading("📈 Real-time GPU Metrics (Last 10 Seconds)");
-            let gpu_util_points: PlotPoints = data_guard
-                .iter()
-                .map(|data| [data.timestamp, data.utilization as f64])
-                .collect();
-            let memory_points: PlotPoints = data_guard
-                .iter()
-                .map(|data| [data.timestamp, data.memory_used / data.memory_total * 100.0])
-                .collect();
-            let temp_points: PlotPoints = data_guard
-                .iter()
-                .map(|data| [data.timestamp, data.temperature as f64])
-                .collect();
+
+            let latest_timestamp = data_guard.back().map_or(0.0, |d| d.timestamp);
+
+            // 将绝对时间戳转换为 [0, 10] 区间的相对时间
+            // x = 最新时间 - 当前数据时间
+            // 这样最新的数据点 x=0 (0秒前), 最老的数据点 x 接近 10 (10秒前)
+            let to_relative_points = |mapper: Box<dyn Fn(&GpuData) -> f64>| -> PlotPoints {
+                data_guard
+                    .iter()
+                    .map(|data| {
+                        let x = latest_timestamp - data.timestamp;
+                        [x.max(0.0), mapper(data)]
+                    })
+                    .collect()
+            };
+
+            let gpu_util_points: PlotPoints =
+                to_relative_points(Box::new(|d| d.utilization as f64));
+            let memory_points: PlotPoints =
+                to_relative_points(Box::new(|d| d.memory_used / d.memory_total * 100.0));
+            let temp_points: PlotPoints = to_relative_points(Box::new(|d| d.temperature as f64));
+
             let power_points: PlotPoints = data_guard
                 .iter()
                 .filter(|data| data.power_limit > 0.0)
-                .map(|data| [data.timestamp, data.power_usage / data.power_limit * 100.0])
+                .map(|data| {
+                    let x = latest_timestamp - data.timestamp;
+                    [x.max(0.0), data.power_usage / data.power_limit * 100.0]
+                })
                 .collect();
 
-            let now = data_guard.back().map_or(0.0, |d| d.timestamp);
-            let x_min = (now - self.display_duration).max(0.0);
-            let x_max = now.max(self.display_duration); // Ensure the window is always 10s wide at the start
-
-            Plot::new("gpu_utilization")
+            Plot::new("gpu_metrics_plot")
                 .view_aspect(2.5)
-                .legend(Legend::default()) // 新增：显示图例
+                .legend(Legend::default())
                 .include_y(0.0)
                 .include_y(100.0)
-                .include_x(x_min)
-                .include_x(x_max)
-                .show_x(false) // Hide timestamp labels for a cleaner look
+                .include_x(0.0)
+                .include_x(self.display_duration)
+                .x_axis_label("Seconds Ago (0 = now)") // X轴标签已修改
+                .show_x(true)
                 .show_y(true)
                 .show(ui, |plot_ui| {
                     plot_ui
@@ -329,11 +301,11 @@ impl eframe::App for RgmApp {
                             .color(Color32::from_rgb(255, 0, 128)),
                     );
                 });
+            // ==================== 逻辑修改结束 ====================
 
             ui.add_space(12.0);
             ui.separator();
 
-            // 进程信息表格
             ui.heading("🧩 GPU Processes");
             egui::ScrollArea::vertical()
                 .max_height(200.0)
@@ -371,7 +343,7 @@ fn main() {
     };
 
     eframe::run_native(
-        "Rust GPU Monitor",
+        "RGM",
         native_options,
         Box::new(|cc| Ok(Box::new(RgmApp::new(cc)))),
     )
