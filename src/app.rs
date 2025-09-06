@@ -7,7 +7,7 @@ use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
 use std::{thread, time::Duration};
 
-// 应用程序状态
+// Main application structure
 pub struct RgmApp {
     data: Arc<Mutex<VecDeque<GpuData>>>,
     receiver: Receiver<(GpuData, Vec<ProcessInfo>)>,

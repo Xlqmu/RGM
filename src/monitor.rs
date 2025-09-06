@@ -28,7 +28,7 @@ pub struct NvmlMonitor {
 impl NvmlMonitor {
     pub fn new(device_index: u32) -> Result<Self, MonitorError> {
         let nvml = Nvml::init()?;
-        // 在创建时验证设备是否存在，以提前抛出错误
+        // Check if the device exists
         nvml.device_by_index(device_index)?;
         Ok(Self {
             nvml,
@@ -40,7 +40,7 @@ impl NvmlMonitor {
 
 impl GpuMonitor for NvmlMonitor {
     fn get_static_info(&self) -> GpuInfo {
-        // 在需要时临时获取 device 对象
+        // Temporarily get the device object when needed
         let device = self.nvml.device_by_index(self.device_index).unwrap();
 
         GpuInfo {
@@ -57,7 +57,7 @@ impl GpuMonitor for NvmlMonitor {
     }
 
     fn sample(&self) -> Result<(GpuData, Vec<ProcessInfo>), MonitorError> {
-        // 在需要时临时获取 device 对象
+        // Temporarily get the device object when needed
         let device = self.nvml.device_by_index(self.device_index)?;
 
         let (util, mem, temp) = (

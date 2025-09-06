@@ -1,4 +1,4 @@
-// GPU 数据结构
+// GPU data structure, storing dynamic information
 #[derive(Clone, Debug)]
 pub struct GpuData {
     pub timestamp: f64,
@@ -15,7 +15,7 @@ pub struct GpuData {
     pub pcie_throughput_rx: f64,
 }
 
-// GPU 信息结构体，存储静态信息
+// GPU information structure, storing static information
 #[derive(Clone, Debug, Default)]
 pub struct GpuInfo {
     pub name: String,
@@ -26,7 +26,7 @@ pub struct GpuInfo {
     pub vbios_version: String,
 }
 
-// 进程信息结构体
+// Process information structure, storing information about GPU processes
 #[derive(Clone, Debug)]
 pub struct ProcessInfo {
     pub pid: u32,
