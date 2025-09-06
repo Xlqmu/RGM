@@ -1,5 +1,5 @@
 [package]
-name = "rgm-ui"
+name = "rgm_ui"
 version = "0.1.0"
 edition = "2021"
 description = "A Rust GPU Monitor with egui UI for NVIDIA GPUs on Linux"
